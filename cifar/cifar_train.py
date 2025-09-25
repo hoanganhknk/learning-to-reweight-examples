@@ -44,9 +44,8 @@ import numpy as np
 import os
 import six
 
-
 import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior() 
+tf.disable_v2_behavior()
 
 from collections import namedtuple
 from google.protobuf.text_format import Merge, MessageToString
@@ -89,6 +88,7 @@ def _get_model(config, inp, label, bsize, is_training, name_scope, reuse):
         'batch_size': bsize,
     }
     with tf.name_scope(name_scope):
+        # inner scope giữ là 'Model' để tương thích checkpoint; outer scope sẽ phân tách replica
         with tf.variable_scope('Model', reuse=reuse):
             m = get_model(model_cls, config, **trn_kwargs)
     return m
@@ -574,7 +574,8 @@ def main(_):
         if FLAGS.id is None:
             dataset_name = FLAGS.dataset
             if FLAGS.config is not None:
-                model_name = FLAGS.config.split('/')[-1].split('.')[0][6:]
+                model_name = FLAGS.config.split('/')[-1].split('.')[0].split('model')[-1]
+                # original was [6:], but keep robust parsing
             else:
                 model_name = FLAGS.model
             exp_id = 'e_' + dataset_name + '_' + model_name
@@ -593,34 +594,45 @@ def main(_):
             save_folder = None
 
         # -----------------------------------------------------------------
-        # Build shared-weights model replicas, for different data sources.
-        model_c = _get_reweighted_model(config, None, None, None, None, True, 'TrainC', None)
+        # Build StudentC (training) under its own outer variable scope.
+        with tf.variable_scope('StudentC', reuse=False):
+            model_c = _get_reweighted_model(config, None, None, None, None, True, 'TrainC', None)
         var_list = tf.trainable_variables()
         [print(vv.name) for vv in var_list]
 
+        # Define builders for StudentA / StudentB inside distinct outer scopes.
         def build_model_a(wts_dict, ex_wts, reuse):
-            return _get_assign_weighted_model(config, None, None, ex_wts, wts_dict, bsize_a, True,
-                                              'TrainA', reuse)
+            # Ensure all StudentA variables live under 'StudentA/Model/...'
+            with tf.variable_scope('StudentA', reuse=(reuse if reuse is not None else False)):
+                return _get_assign_weighted_model(
+                    config, None, None, ex_wts, wts_dict, bsize_a, True, 'TrainA', reuse)
 
         def build_model_b(wts_dict, ex_wts, reuse):
-            return _get_assign_weighted_model(config, None, None, ex_wts, wts_dict, bsize_b, True,
-                                              'TrainB', reuse)
+            # Ensure all StudentB variables live under 'StudentB/Model/...'
+            with tf.variable_scope('StudentB', reuse=(reuse if reuse is not None else False)):
+                return _get_assign_weighted_model(
+                    config, None, None, ex_wts, wts_dict, bsize_b, True, 'TrainB', reuse)
 
         ex_wts_a = tf.placeholder_with_default(
             tf.zeros([bsize_a], dtype=tf.float32), [bsize_a], name='ex_wts_a')
 
+        # Build A/B via reweight_autodiff (they will sit under StudentA/StudentB respectively).
         model_a, model_b, ex_weights = reweight_autodiff(
             build_model_a,
             build_model_b,
             bsize_a,
             bsize_b,
             ex_wts_a=ex_wts_a)
-        val_model = _get_model(config, dataset_a.val.inputs, dataset_a.val.labels, bsize_a, False,
-                               'Val', True)
-        noisy_val_model = _get_model(config, dataset_a.val_noisy.inputs, dataset_a.val_noisy.labels,
-                                     bsize_a, False, 'NoisyVal', True)
-        test_model = _get_model(config, dataset_a.test.inputs, dataset_a.test.labels, bsize_a,
-                                False, 'Test', True)
+
+        # Build evaluation models that SHARE weights with StudentC
+        with tf.variable_scope('StudentC', reuse=True):
+            val_model = _get_model(
+                config, dataset_a.val.inputs, dataset_a.val.labels, bsize_a, False, 'Val', True)
+            noisy_val_model = _get_model(
+                config, dataset_a.val_noisy.inputs, dataset_a.val_noisy.labels,
+                bsize_a, False, 'NoisyVal', True)
+            test_model = _get_model(
+                config, dataset_a.test.inputs, dataset_a.test.labels, bsize_a, False, 'Test', True)
 
         saver = tf.train.Saver()
         if FLAGS.restore:
@@ -672,7 +684,7 @@ def main(_):
 
 
 if __name__ == '__main__':
-    flags = tf.app.flags  
+    flags = tf.app.flags
     flags.DEFINE_bool('baseline', False, 'Run non-reweighting baseline')
     flags.DEFINE_bool('eval', False, 'Whether run evaluation only')
     flags.DEFINE_bool('finetune', False, 'Whether to finetune model')
