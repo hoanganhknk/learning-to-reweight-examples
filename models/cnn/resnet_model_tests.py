@@ -1,23 +1,13 @@
-# Copyright (c) 2017 - 2019 Uber Technologies, Inc.
-#
-# Licensed under the Uber Non-Commercial License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at the root directory of this project.
-#
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-#
-#
 # Unit tests for resnet_model.py.
-#
+
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 import numpy as np
 import os
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
-from models.cnn.resnet_model import ResnetModel    # NOQA
+from models.cnn.resnet_model import ResnetModel  # NOQA
 from models.model_factory import get_model_from_file
 
 

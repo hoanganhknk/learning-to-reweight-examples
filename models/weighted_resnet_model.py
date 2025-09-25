@@ -1,19 +1,10 @@
-# Copyright (c) 2017 - 2019 Uber Technologies, Inc.
-#
-# Licensed under the Uber Non-Commercial License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at the root directory of this project.
-#
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-#
-#
 # Residual networks model with non-uniform example weights.
-#
+
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-import tensorflow as tf
+# Dùng TF1-compat để có placeholder/variable_scope trong TF2
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 from models.cnn.resnet_module import ResnetModule
 from models.cnn.resnet_model import ResnetModel
@@ -38,10 +29,11 @@ class WeightedResnetModel(ResnetModel):
         """
         # Example weights.
         if ex_wts is None:
-            w = tf.placeholder(self.dtype, [batch_size], 'w')
+            w = tf.placeholder(self.dtype, [batch_size], name='w')
         else:
             w = ex_wts
         self._ex_wts = w
+
         super(WeightedResnetModel, self).__init__(
             config, is_training=is_training, inp=inp, label=label, batch_size=batch_size)
 
@@ -51,6 +43,7 @@ class WeightedResnetModel(ResnetModel):
 
         :param inp:      [ndarray]    Optional inputs, for placeholder only.
         :param label:    [ndarray]    Optional labels, for placeholder only.
+        :param ex_wts:   [ndarray]    Optional example weights for placeholder only.
 
         :return:         [dict]       A dictionary from model Tensor to input numpy arrays.
         """
@@ -74,7 +67,7 @@ class WeightedResnetModel(ResnetModel):
         :param label:    [ndarray]    Optional labels, for placeholder only.
         :param ex_wts:   [ndarray]    Optional weights for each example.
 
-        :return:         [float]      Cross entropy value.
+        :return:         [float]      Cross entropy (mean, unweighted) for logging.
         """
         results = sess.run(
             [self.cross_ent, self.train_op] + self.bn_update_ops,
@@ -85,16 +78,23 @@ class WeightedResnetModel(ResnetModel):
         """
         Computes the total loss function.
 
-        :param output:          [Tensor]    Output of the network.
-
+        :param output:          [Tensor]    Output logits of the network, shape [B, num_classes].
         :return                 [Scalar]    Loss value.
         """
-        with tf.variable_scope('costs'):
-            xent = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=output, labels=self.label)
+        with tf.compat.v1.variable_scope('costs'):
+            # CE per-example
+            xent = tf.nn.sparse_softmax_cross_entropy_with_logits(
+                logits=output, labels=self.label)
+
+            # Log metric: mean(unweighted)
             xent_avg = tf.reduce_mean(xent, name='xent')
+
+            # Weighted CE (không chuẩn hoá — giữ nguyên logic gốc)
             xent_wt = tf.reduce_sum(xent * self.ex_wts, name='xent_wt')
+
             cost = xent_wt
             cost += self._decay()
+
             self._cross_ent_avg = xent_avg
             self._cross_ent_wt = xent_wt
         return cost
@@ -105,4 +105,5 @@ class WeightedResnetModel(ResnetModel):
 
     @property
     def cross_ent(self):
+        # Trả về CE trung bình (không trọng số) để hiển thị/ghi log
         return self._cross_ent_avg

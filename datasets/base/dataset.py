@@ -15,7 +15,6 @@
 # limitations under the License.
 #
 #
-#
 # Data set base class.
 #
 from __future__ import absolute_import, division, print_function, unicode_literals
@@ -24,6 +23,11 @@ from abc import abstractmethod
 import os
 
 import tensorflow as tf
+# Dùng tf.io.gfile (TF2) với fallback compat.v1
+try:
+    from tensorflow.io import gfile  # TF2 chuẩn
+except Exception:
+    from tensorflow.compat.v1 import gfile  # fallback cho môi trường cũ
 
 from utils import logger
 
@@ -71,7 +75,8 @@ class Dataset(object):
         :return             [list]  python list of all (sharded) data set files.
         """
         tf_record_pattern = os.path.join(self.data_dir, '%s-*' % self.subset)
-        data_files_list = tf.gfile.Glob(tf_record_pattern)
+        # SỬA: dùng gfile.glob thay cho tf.gfile.Glob (TF2 không còn tf.gfile)
+        data_files_list = gfile.glob(tf_record_pattern)
         if not data_files_list:
             log.error('No files found for dataset {}/{} at {}'.format(self.name, self.subset,
                                                                       self.data_dir))
@@ -85,7 +90,8 @@ class Dataset(object):
 
         :return            [object]  Reader object that reads the data set.
         """
-        return tf.TFRecordReader()
+        # SỬA: TF2 không có tf.TFRecordReader; dùng compat.v1
+        return tf.compat.v1.TFRecordReader()
 
     @property
     def name(self):

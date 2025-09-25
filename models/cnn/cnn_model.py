@@ -1,19 +1,9 @@
-# Copyright (c) 2017 - 2019 Uber Technologies, Inc.
-#
-# Licensed under the Uber Non-Commercial License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at the root directory of this project.
-#
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-#
-#
 # A general CNN model.
-#
+
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 from models.optim.optimizer_factory import get_optimizer
 from utils import logger
@@ -27,13 +17,6 @@ class CNNModel(object):
     def __init__(self, config, cnn_module, is_training=True, inp=None, label=None, batch_size=None):
         """
         CNN constructor.
-
-        :param config:      [object]    Configuration object.
-        :param cnn_module:  [object]    A CNN module which builds the main graph.
-        :param is_training: [bool]      Whether in training mode, default True.
-        :param inp:         [Tensor]    Inputs to the network, optional, default placeholder.
-        :param label:       [Tensor]    Labels for training, optional, default placeholder.
-        :param batch_size:  [int]       Number of examples in batch dimension (optional).
         """
         self._config = config
         self._bn_update_ops = None
@@ -42,14 +25,16 @@ class CNNModel(object):
 
         # Input.
         if inp is None:
-            x = tf.placeholder(self.dtype, [
-                batch_size, config.input_height, config.input_width, config.num_channels
-            ], 'x')
+            x = tf.placeholder(
+                self.dtype,
+                [batch_size, config.input_height, config.input_width, config.num_channels],
+                name='x'
+            )
         else:
             x = inp
 
         if label is None:
-            y = tf.placeholder(tf.int32, [batch_size], 'y')
+            y = tf.placeholder(tf.int32, [batch_size], name='y')
         else:
             y = label
         self._input = x
@@ -69,101 +54,71 @@ class CNNModel(object):
             'global_step', [],
             initializer=tf.constant_initializer(0),
             trainable=False,
-            dtype=tf.int64)
+            dtype=tf.int64
+        )
         learn_rate = tf.get_variable(
             'learn_rate', [],
             initializer=tf.constant_initializer(0.0),
             trainable=False,
-            dtype=self.dtype)
+            dtype=self.dtype
+        )
         self._learn_rate = learn_rate
         self._grads_and_vars = self._compute_gradients(cost)
         log.info('BN update ops:')
         [log.info(op) for op in self.bn_update_ops]
         log.info('Total number of BN updates: {}'.format(len(self.bn_update_ops)))
         self._train_op = self._apply_gradients(
-            self._grads_and_vars, global_step=global_step, name='train_step')
+            self._grads_and_vars, global_step=global_step, name='train_step'
+        )
         self._global_step = global_step
         self._new_learn_rate = tf.placeholder(self.dtype, shape=[], name='new_learning_rate')
         self._learn_rate_update = tf.assign(self._learn_rate, self._new_learn_rate)
 
     def _build_graph(self, inp):
-        """
-        Builds core computation graph from inputs to outputs.
-
-        :param inp:            [Tensor]     4D float tensor, inputs to the network.
-
-        :return                [Tensor]     output tensor.
-        """
+        """Builds core computation graph from inputs to outputs."""
         return self._cnn_module(inp)
 
     def _compute_loss(self, output):
-        """
-        Computes the total loss function.
-
-        :param output:          [Tensor]    Output of the network.
-
-        :return                 [Scalar]    Loss value.
-        """
+        """Computes the total loss function."""
         with tf.variable_scope('costs'):
             xent = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=output, labels=self.label)
             xent = tf.reduce_mean(xent, name='xent')
-            cost = xent
-            cost += self._decay()
+            cost = xent + self._decay()
             self._cross_ent = xent
         return cost
 
     def _compute_correct(self):
-        """
-        Computes number of correct predictions.
-
-        :return                 [Scalar]    Number of correct predictions.
-        """
+        """Computes number of correct predictions."""
         output_idx = tf.cast(tf.argmax(self.output, axis=1), self.label.dtype)
-        return tf.to_float(tf.equal(output_idx, self.label))
+        return tf.cast(tf.equal(output_idx, self.label), tf.float32)
 
     def assign_learn_rate(self, session, learn_rate_value):
-        """
-        Assigns new learning rate.
-
-        :param session:          [Session]     TensorFlow Session object.
-        :param learn_rate_value: [float]       New learning rate value.
-        """
+        """Assigns new learning rate."""
         log.info('Adjusting learning rate to {}'.format(learn_rate_value))
         session.run(self._learn_rate_update, feed_dict={self._new_learn_rate: learn_rate_value})
 
     def _apply_gradients(self, grads_and_vars, global_step=None, name='train_step'):
         """
         Applies the gradients globally.
-
-        :param grads_and_vars: [list]      List of tuple of a gradient and a variable.
-        :param global_step:    [Tensor]    Step number, optional.
-        :param name:           [string]    Name of the operation, default 'train_step'.
         """
         # opt = get_optimizer(self.config.optimizer_config.type)(
         #     self.learn_rate, self.config.optimizer_config.momentum)
         opt = tf.train.MomentumOptimizer(self.learn_rate, 0.9)
-        train_op = opt.apply_gradients(self._grads_and_vars, global_step=global_step, name=name)
+        train_op = opt.apply_gradients(grads_and_vars, global_step=global_step, name=name)
         return train_op
 
     def _compute_gradients(self, cost, var_list=None):
         """
         Computes the gradients to variables.
-
-        :param cost     [Tensor]     Cost function value.
-        :param var_list [list]       List of variables to optimize, optional.
-
-        :return:        [list]       List of tuple of a gradient and a variable.
         """
         if var_list is None:
             var_list = tf.trainable_variables()
         grads = tf.gradients(cost, var_list)
-        return zip(grads, var_list)
+        return list(zip(grads, var_list))
 
     def _decay(self):
         """
         Applies L2 weight decay loss.
-
-        :return: [Tensor]  Regularization cost function value.
         """
         weight_decay_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
         log.info('Weight decay variables')
@@ -173,17 +128,10 @@ class CNNModel(object):
             return tf.add_n(weight_decay_losses)
         else:
             log.warning('No weight decay variables!')
-            return 0.0
+            return tf.constant(0.0, dtype=self.dtype)
 
     def _get_feed_dict(self, inp=None, label=None):
-        """
-        Generates feed dict.
-
-        :param inp:      [ndarray]    Optional inputs, for placeholder only.
-        :param label:    [ndarray]    Optional labels, for placeholder only.
-
-        :return:         [dict]       A dictionary from model Tensor to input numpy arrays.
-        """
+        """Generates feed dict."""
         if inp is None and label is None:
             return None
         feed_data = {}
@@ -194,43 +142,21 @@ class CNNModel(object):
         return feed_data
 
     def infer_step(self, sess, inp=None):
-        """
-        Runs one inference step.
-
-        :param sess:     [Session]    TensorFlow Session object.
-        :param inp:      [ndarray]    Optional inputs, for placeholder only.
-
-        :return:         [ndarray]    Output prediction.
-        """
+        """Runs one inference step."""
         return sess.run(self.output, feed_dict=self._get_feed_dict(inp=inp))
 
     def eval_step(self, sess, inp=None, label=None):
-        """
-        Runs one training step.
-
-        :param sess:     [Session]    TensorFlow Session object.
-        :param inp:      [ndarray]    Optional inputs, for placeholder only.
-        :param label:    [ndarray]    Optional labels, for placeholder only.
-
-        :return:         [float]      Accuracy value.
-        :return:         [float]      Cross entropy value.
-        """
+        """Runs one eval step."""
         return sess.run(
-            [self.correct, self.cross_ent], feed_dict=self._get_feed_dict(inp=inp, label=label))
+            [self.correct, self.cross_ent], feed_dict=self._get_feed_dict(inp=inp, label=label)
+        )
 
     def train_step(self, sess, inp=None, label=None):
-        """
-        Runs one training step.
-
-        :param sess:     [Session]    TensorFlow Session object.
-        :param inp:      [ndarray]    Optional inputs, for placeholder only.
-        :param label:    [ndarray]    Optional labels, for placeholder only.
-
-        :return:         [float]      Cross entropy value.
-        """
+        """Runs one training step."""
         results = sess.run(
             [self.cross_ent, self.train_op] + self.bn_update_ops,
-            feed_dict=self._get_feed_dict(inp=inp, label=label))
+            feed_dict=self._get_feed_dict(inp=inp, label=label)
+        )
         return results[0]
 
     @property
@@ -274,7 +200,7 @@ class CNNModel(object):
     @property
     def correct(self):
         if self._correct is None:
-            self._correct = self._compute_correct(self.output)
+            self._correct = self._compute_correct()
         return self._correct
 
     @property

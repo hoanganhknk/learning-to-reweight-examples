@@ -1,25 +1,20 @@
-# Copyright (c) 2017 - 2019 Uber Technologies, Inc.
-#
-# Licensed under the Uber Non-Commercial License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at the root directory of this project.
-#
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-#
-#
 # Residual networks model with externally assigned weights (parameters).
-#
+
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-import tensorflow as tf
+# Dùng TF1-compat để chạy API TF1 trong môi trường TF2
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 from utils import logger
 from models.cnn.cnn_model import CNNModel
 from models.model_factory import RegisterModel
 from models.cnn.resnet_module import ResnetModule
 from models.base.nnlib import weight_variable_cpu, batch_norm
+
+# (Tuỳ chọn, chỉ dùng nếu gọi create_from_file)
+from google.protobuf.text_format import Merge
+from models.cnn.configs.resnet_model_config_pb2 import ResnetModelConfig
 
 log = logger.get()
 
@@ -33,10 +28,7 @@ class AssignedWeightsResnetModule(ResnetModule):
         :param is_training:     [bool]    Whether in training mode.
         """
         self._weights_dict = weights_dict
-        if weights_dict is None:
-            self._create_new_var = True
-        else:
-            self._create_new_var = False
+        self._create_new_var = weights_dict is None
         super(AssignedWeightsResnetModule, self).__init__(config, is_training=is_training)
 
     def _weight_variable(self,
@@ -48,10 +40,7 @@ class AssignedWeightsResnetModule(ResnetModule):
                          name=None,
                          trainable=True,
                          seed=0):
-        """A wrapper to declare variables on CPU.
-        If weights_dict is not None, it retrieves the historical weights.
-        """
-        # Here grab a shared variable first.
+        """Declare variables; nếu có weights_dict thì dùng shared var từ đó."""
         var = super(AssignedWeightsResnetModule, self)._weight_variable(
             shape,
             init_method=init_method,
@@ -70,14 +59,14 @@ class AssignedWeightsResnetModule(ResnetModule):
             return self.weights_dict[var.name]
 
     def _batch_norm(self, name, x):
-        """Batch normalization."""
+        """Batch normalization (đơn giản, chỉ dùng beta)."""
         if self.data_format == 'NCHW':
             axis = 1
             axes = [0, 2, 3]
         else:
             axis = -1
             axes = [0, 1, 2]
-        with tf.variable_scope('BatchNorm'):
+        with tf.compat.v1.variable_scope('BatchNorm'):
             beta = self._weight_variable([int(x.get_shape()[axis])], name='beta')
         mean, var = tf.nn.moments(x, axes=axes)
         if self.data_format == 'NCHW':
@@ -123,10 +112,11 @@ class AssignedWeightsResnetModel(CNNModel):
         """
         # Example weights.
         if ex_wts is None:
-            w = tf.placeholder(self.dtype, [batch_size], 'w')
+            w = tf.compat.v1.placeholder(self.dtype, [batch_size], name='w')
         else:
             w = ex_wts
         self._ex_wts = w
+
         super(AssignedWeightsResnetModel, self).__init__(
             config,
             AssignedWeightsResnetModule(
@@ -144,7 +134,8 @@ class AssignedWeightsResnetModel(CNNModel):
                          label=None,
                          batch_size=None):
         config = ResnetModelConfig()
-        Merge(open(config_filename).read(), config)
+        with open(config_filename, 'r') as f:
+            Merge(f.read(), config)
         return cls(config, is_training=is_training, inp=inp, label=label, batch_size=batch_size)
 
     def _compute_loss(self, output):
@@ -155,10 +146,8 @@ class AssignedWeightsResnetModel(CNNModel):
 
         :return                 [Scalar]    Loss value.
         """
-        with tf.variable_scope('costs'):
+        with tf.compat.v1.variable_scope('costs'):
             label = tf.one_hot(self.label, self._cnn_module.config.num_classes)
-            # xent = tf.nn.softmax_cross_entropy_with_logits(logits=output, labels=self.label)
-            # xent = tf.losses.softmax_cross_entropy(label, output)
             xent = tf.nn.softmax_cross_entropy_with_logits(labels=label, logits=output)
             xent_avg = tf.reduce_mean(xent, name='xent')
             xent_wt = tf.reduce_sum(xent * self.ex_wts, name='xent_wt')

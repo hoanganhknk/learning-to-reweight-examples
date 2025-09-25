@@ -1,19 +1,9 @@
-# Copyright (c) 2017 - 2019 Uber Technologies, Inc.
-#
-# Licensed under the Uber Non-Commercial License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at the root directory of this project.
-#
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-#
-#
 # Multi-tower CNN model for training CNN on multiple towers (multiple GPUs).
-#
+
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 from models.cnn.cnn_model import CNNModel
 from utils import logger
@@ -69,12 +59,13 @@ class MultiTowerCNNModel(CNNModel):
         for ii in range(self.num_replica):
             _device = self._get_replica_device(ii)
             with tf.device(_device):
-                with tf.name_scope("%s_%d" % ("replica", ii)):
+                with tf.name_scope("replica_{}".format(ii)):
                     outputs.append(self._cnn_module(inputs[ii]))
                     log.info("Replica {} forward built on {}".format(ii, _device))
-                    tf.get_variable_scope().reuse_variables()
-        # Reset reuse flag.
-        tf.get_variable_scope()._reuse = None
+                    # bật reuse cho các tower sau tower đầu
+                    tf.compat.v1.get_variable_scope().reuse_variables()
+        # Reset reuse flag (API private, giữ hành vi gốc)
+        tf.compat.v1.get_variable_scope()._reuse = None
         return outputs
 
     def _compute_loss(self, output):
@@ -90,7 +81,7 @@ class MultiTowerCNNModel(CNNModel):
         cost_list = []
         for ii, (_output, _label) in enumerate(zip(output, labels)):
             with tf.device(self._get_replica_device(ii)):
-                with tf.name_scope("%s_%d" % ("replica", ii)):
+                with tf.name_scope("replica_{}".format(ii)):
                     _xent = tf.reduce_mean(
                         tf.nn.sparse_softmax_cross_entropy_with_logits(
                             logits=_output, labels=_label))
@@ -112,7 +103,7 @@ class MultiTowerCNNModel(CNNModel):
         grads_and_vars = []
         for ii, _cost in enumerate(cost):
             with tf.device(self._get_replica_device(ii)):
-                with tf.name_scope("%s_%d" % ("replica", ii)):
+                with tf.name_scope("replica_{}".format(ii)):
                     var_list = tf.trainable_variables()
                     grads = tf.gradients(_cost, var_list)
                     grads_and_vars.append(list(zip(grads, var_list)))
@@ -121,52 +112,34 @@ class MultiTowerCNNModel(CNNModel):
 
     def _average_gradients(self, tower_grads):
         """
-        Calculates the average gradient for each shared variable across all towers. Note that this
-        function procides a synchronization point across all towers.
-
-        :param tower_grads      [list]      List of lists of (gradient, variable) tuples. The inner
-                                            list is over individual gradients. The outer list is
-                                            over the gradient calculation for each tower.
-
-        :return                 [list]      List of pairs of (gradient, variable) where the gradient
-        has been averaged across all towers.
+        Calculates the average gradient for each shared variable across all towers.
         """
         average_grads = []
         for grad_and_vars in zip(*tower_grads):
-            # Note that each grad_and_vars looks like the following:
-            #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
             grads = []
             for g, v in grad_and_vars:
-                # Add 0 dimension to the gradients to represent the tower.
                 if g is None:
-                    log.warning("No gradient for variable \"{}\"".format(v.name))
+                    log.warning('No gradient for variable "{}"'.format(v.name))
                     grads.append(None)
                     break
                 else:
-                    expanded_g = tf.expand_dims(g, 0)
-                    grads.append(expanded_g)
+                    grads.append(tf.expand_dims(g, 0))
 
-            # Average over the "tower" dimension.
             if grads[0] is None:
                 grad = None
             else:
                 grad = tf.concat(grads, axis=0)
                 grad = tf.reduce_mean(grad, 0)
 
-            # Keep in mind that the Variables are redundant because they are shared
-            # across towers. So .. we will just return the first tower"s pointer to
-            # the Variable.
-            v = grad_and_vars[0][1]
-            grad_and_var = (grad, v)
-            average_grads.append(grad_and_var)
+            v = grad_and_vars[0][1]  # shared variable
+            average_grads.append((grad, v))
         return average_grads
 
     def _get_device(self, device_name="cpu", device_id=0):
         return "/{}:{:d}".format(device_name, device_id)
 
     def _get_replica_device(self, replica_id):
-        device = self._get_device("gpu", replica_id)
-        return device
+        return self._get_device("gpu", replica_id)
 
     @property
     def cost(self):

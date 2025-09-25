@@ -1,17 +1,7 @@
-# Copyright (c) 2017 - 2019 Uber Technologies, Inc.
-#
-# Licensed under the Uber Non-Commercial License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at the root directory of this project.
-#
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-#
-#
 # Reweighting algorithms.
-#
-import tensorflow as tf
+
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 
 def _reweight(build_model_a,
@@ -38,23 +28,31 @@ def _reweight(build_model_a,
     if ex_wts_a is None:
         ex_wts_a = tf.zeros([bsize_a], dtype=tf.float32)
     ex_wts_b = tf.ones([bsize_b], dtype=ex_wts_a.dtype) / float(bsize_b)
-    model_a = build_model_a(None, ex_wts_a, True)
+
+    # Lần build đầu tiên: tạo biến => reuse=False
+    model_a = build_model_a(None, ex_wts_a, False)
     var_names = model_a._cnn_module.weights_dict.keys()
     var_list = [model_a._cnn_module.weights_dict[kk] for kk in var_names]
+
     grads_a = tf.gradients(model_a.cost, var_list, gate_gradients=gate_gradients)
-    if legacy:    # For finite difference gradient checking only, slower.
+
+    if legacy:  # For finite difference gradient checking only, slower.
         grad_dict = dict(zip(var_names, grads_a))
-        weights_dict_new = dict()
+        weights_dict_new = {}
         for kk in model_a._cnn_module.weights_dict.keys():
             weights_dict_new[kk] = model_a._cnn_module.weights_dict[kk] - grad_dict[kk]
     else:
         weights_dict_new = model_a._cnn_module.weights_dict
+
+    # Model B dùng chung trọng số với Model A => reuse=True
     model_b = build_model_b(weights_dict_new, ex_wts_b, True)
+
     if legacy:
         grads_ex_wts = -tf.gradients(model_b.cost, [ex_wts_a], gate_gradients=gate_gradients)[0]
     else:
         grads_b = tf.gradients(model_b.cost, var_list, gate_gradients=gate_gradients)
         grads_ex_wts = tf.gradients(grads_a, [ex_wts_a], grads_b, gate_gradients=gate_gradients)[0]
+
     return model_a, model_b, grads_ex_wts
 
 
@@ -88,10 +86,12 @@ def reweight_autodiff(build_model_a,
         ex_wts_a=ex_wts_a,
         gate_gradients=gate_gradients,
         legacy=legacy)
+
     ex_weight_plus = tf.maximum(grads_ex_wts, eps)
     ex_weight_sum = tf.reduce_sum(ex_weight_plus)
     ex_weight_sum += tf.cast(tf.equal(ex_weight_sum, 0.0), ex_weight_sum.dtype)
     ex_weight_norm = ex_weight_plus / ex_weight_sum
+
     # Do not take gradients of the example weights again.
     ex_weight_norm = tf.stop_gradient(ex_weight_norm)
     return model_a, model_b, ex_weight_norm

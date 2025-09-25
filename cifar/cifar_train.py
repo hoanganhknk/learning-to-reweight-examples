@@ -8,7 +8,6 @@
 # limitations under the License.
 #
 #
-#
 # Trains a CNN on CIFAR with noisy labels (uniform flip).
 #
 # Usage:
@@ -37,13 +36,17 @@
 #   --data_root        [string]        Data folder path, default "./data"
 #   --results          [string]        Model checkpoint saving path, default "./results"
 #
+
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 import logging
 import numpy as np
 import os
 import six
-import tensorflow as tf
+
+
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior() 
 
 from collections import namedtuple
 from google.protobuf.text_format import Merge, MessageToString
@@ -58,7 +61,7 @@ from utils.learn_rate_schedulers import FixedLearnRateScheduler
 
 from cifar.generate_noisy_cifar_data import generate_noisy_cifar
 from cifar.noisy_cifar_dataset import NoisyCifar100Dataset    # NOQA
-from cifar.noisy_cifar_dataset import NoisyCifar10Dataset    # NOQA
+from cifar.noisy_cifar_dataset import NoisyCifar10Dataset     # NOQA
 from cifar.noisy_cifar_input_pipeline import NoisyCifarInputPipeline    # NOQA
 from models.assigned_weights_resnet_model import AssignedWeightsResnetModel    # NOQA
 from models.weighted_resnet_model import WeightedResnetModel    # NOQA
@@ -239,6 +242,7 @@ def _get_exp_logger(sess, log_folder):
 
         def flush(self):
             """Flushes results to disk."""
+            # No-op here; FileWriter auto-flushes fairly often.
 
         def close(self):
             """Closes writer."""
@@ -442,21 +446,6 @@ def train_model(sess,
                 save_folder=None):
     """
     Trains a CIFAR model.
-
-    :param sess:                 [Session]    Session object.
-    :param exp_id:               [string]     Experiment ID.
-    :param config:               [object]     Config object.
-    :param data_a:               [object]     Training set A.
-    :param data_b:               [object]     Training set B.
-    :param model_a:              [object]     Model A.
-    :param model_b:              [object]     Model B.
-    :param ex_weights:           [Tensor]     Example weights.
-    :param trn_reweighted_model: [object]     Reweighted training model.
-    :param val_model:            [object]     Validation model.
-    :param val_noisy_model:      [object]     Noisy validation model.
-    :param save_folder:          [string]     Folder to save model.
-
-    :return:                     [float]      Final validation accuracy.
     """
     mvalid = val_model
 
@@ -541,7 +530,7 @@ def train_model(sess,
     return val_acc, noisy_val_acc
 
 
-def main():
+def main(_):
     # -----------------------------------------------------------------
     # Loads parammeters.
     config = _get_config()
@@ -683,7 +672,7 @@ def main():
 
 
 if __name__ == '__main__':
-    flags = tf.flags
+    flags = tf.app.flags  
     flags.DEFINE_bool('baseline', False, 'Run non-reweighting baseline')
     flags.DEFINE_bool('eval', False, 'Whether run evaluation only')
     flags.DEFINE_bool('finetune', False, 'Whether to finetune model')
@@ -709,4 +698,4 @@ if __name__ == '__main__':
         log.setLevel(logging.DEBUG)
     else:
         log.setLevel(logging.WARNING)
-    main()
+    tf.app.run(main)

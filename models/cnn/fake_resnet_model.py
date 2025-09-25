@@ -1,20 +1,10 @@
-# Copyright (c) 2019 Uber Technologies, Inc.
-#
-# Licensed under the Uber Non-Commercial License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at the root directory of this project.
-#
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-#
-#
 # A fake resnet model built for gradient testing. Using tf.float64.
-#
+
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 from google.protobuf.text_format import Merge
 
@@ -47,13 +37,10 @@ class FakeResnetModule(object):
                                         [B, K] if build classifier.
         """
         config = self.config
-        strides = config.strides
-        dropout = config.dropout
-        filters = [ff for ff in config.num_filters]    # Copy filter config.
-        init_filter_size = config.init_filter_size
         assert self.data_format == 'NHWC'
-        inp = tf.reshape(inp, [inp.shape[0], -1])
-        h = inp
+        # Dùng shape động để an toàn trong graph mode
+        bsz = tf.shape(inp)[0]
+        h = tf.reshape(inp, [bsz, -1])
         if config.build_classifier:
             with tf.variable_scope('logit'):
                 h = self._fully_connected(h, config.num_classes)
@@ -62,11 +49,6 @@ class FakeResnetModule(object):
     def _fully_connected(self, x, out_dim):
         """
         A FullyConnected layer for final output.
-
-        :param x:         [Tensor]     Input to the fully connected layer.
-        :param out_dim:   [int]        Number of output dimension.
-
-        :return:          [Tensor]     Output of the fully connected layer.
         """
         x_shape = x.get_shape()
         d = x_shape[1]
@@ -91,9 +73,7 @@ class FakeResnetModule(object):
                          trainable=True,
                          seed=0):
         """
-        A wrapper to declare variables on CPU.
-
-        See nnlib.py:weight_variable_cpu for documentation.
+        A wrapper to declare variables on CPU. See nnlib.py:weight_variable_cpu.
         """
         return weight_variable_cpu(
             shape,
@@ -123,15 +103,6 @@ class FakeResnetModel(CNNModel):
     """Resnet model."""
 
     def __init__(self, config, is_training=True, inp=None, label=None, batch_size=None):
-        """
-        Resnet constructor.
-
-        :param config:      [object]    Configuration object.
-        :param is_training: [bool]      Whether in training mode, default True.
-        :param inp:         [Tensor]    Inputs to the network, optional, default placeholder.
-        :param label:       [Tensor]    Labels for training, optional, default placeholder.
-        :param batch_size:  [int]       Number of examples in batch dimension (optional).
-        """
         self._config = config
         self._is_training = is_training
         super(FakeResnetModel, self).__init__(
@@ -164,10 +135,7 @@ class FakeResnetModel(CNNModel):
 class FakeAssignedWeightsResnetModule(FakeResnetModule):
     def __init__(self, config, weights_dict, is_training=True):
         self._weights_dict = weights_dict
-        if weights_dict is None:
-            self._create_new_var = True
-        else:
-            self._create_new_var = False
+        self._create_new_var = weights_dict is None
         super(FakeAssignedWeightsResnetModule, self).__init__(config, is_training=is_training)
 
     def _weight_variable(self,
@@ -179,10 +147,7 @@ class FakeAssignedWeightsResnetModule(FakeResnetModule):
                          name=None,
                          trainable=True,
                          seed=0):
-        """A wrapper to declare variables on CPU.
-        If weights_dict is not None, it retrieves the historical weights.
-        """
-        # Here grab a shared variable first.
+        """If weights_dict is not None, reuse stored variables."""
         var = super(FakeAssignedWeightsResnetModule, self)._weight_variable(
             shape,
             init_method=init_method,
@@ -201,7 +166,7 @@ class FakeAssignedWeightsResnetModule(FakeResnetModule):
             return self.weights_dict[var.name]
 
     def _batch_norm(self, name, x):
-        """Batch normalization."""
+        """Simple BN without moving averages (giữ nguyên hành vi test)."""
         if self.data_format == 'NCHW':
             axis = 1
             axes = [0, 2, 3]
@@ -209,7 +174,7 @@ class FakeAssignedWeightsResnetModule(FakeResnetModule):
             axis = -1
             axes = [0, 1, 2]
         with tf.variable_scope('BatchNorm'):
-            beta = self._weight_variable([int(x.get_shape()[axis])], name='beta')
+            beta = self._weight_variable([int(x.get_shape()[axis])], name='beta', dtype=self.dtype)
         mean, var = tf.nn.moments(x, axes=axes)
         if self.data_format == 'NCHW':
             beta = tf.reshape(beta, [1, -1, 1, 1])
@@ -232,7 +197,7 @@ class FakeAssignedWeightsResnetModule(FakeResnetModule):
 
 @RegisterModel('fake-assign-wts-resnet')
 class FakeAssignedWeightsResnetModel(CNNModel):
-    """Resnet model."""
+    """Resnet model with externally assigned example weights."""
 
     def __init__(self,
                  config,
@@ -242,19 +207,9 @@ class FakeAssignedWeightsResnetModel(CNNModel):
                  label=None,
                  ex_wts=None,
                  batch_size=None):
-        """
-        Resnet constructor.
-
-        :param config:      [object]    Configuration object.
-        :param weights_dict [dict]      Dictionary for assigned weights.
-        :param is_training: [bool]      Whether in training mode, default True.
-        :param inp:         [Tensor]    Inputs to the network, optional, default placeholder.
-        :param label:       [Tensor]    Labels for training, optional, default placeholder.
-        :param batch_size:  [int]       Number of examples in batch dimension (optional).
-        """
-        # Example weights.
+        # Example weights (float64 để khớp dtype model)
         if ex_wts is None:
-            w = tf.placeholder(self.dtype, [batch_size], 'w')
+            w = tf.placeholder(self.dtype, [batch_size], name='w')
         else:
             w = ex_wts
         self._ex_wts = w
@@ -279,22 +234,13 @@ class FakeAssignedWeightsResnetModel(CNNModel):
         return cls(config, is_training=is_training, inp=inp, label=label, batch_size=batch_size)
 
     def _compute_loss(self, output):
-        """
-        Computes the total loss function.
-
-        :param output:          [Tensor]    Output of the network.
-
-        :return                 [Scalar]    Loss value.
-        """
+        """Weighted softmax CE in float64."""
         with tf.variable_scope('costs'):
-            label = tf.one_hot(self.label, self._cnn_module.config.num_classes)
-            # xent = tf.nn.softmax_cross_entropy_with_logits(logits=output, labels=self.label)
-            # xent = tf.losses.softmax_cross_entropy(label, output)
+            label = tf.one_hot(self.label, self._cnn_module.config.num_classes, dtype=self.dtype)
             xent = tf.nn.softmax_cross_entropy_with_logits(labels=label, logits=output)
             xent_avg = tf.reduce_mean(xent, name='xent')
             xent_wt = tf.reduce_sum(xent * self.ex_wts, name='xent_wt')
-            cost = xent_wt
-            cost += self._decay()
+            cost = xent_wt + self._decay()
             self._cross_ent_avg = xent_avg
             self._cross_ent_wt = xent_wt
         return cost

@@ -1,19 +1,8 @@
-# Copyright (c) 2017 - 2019 Uber Technologies, Inc.
-#
-# Licensed under the Uber Non-Commercial License (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at the root directory of this project.
-#
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-#
-#
-# Basic neural networks using TensorFlow.
-#
+# Basic neural networks using TensorFlow (TF2 in TF1-compat mode).
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 from utils import logger
 
@@ -32,71 +21,59 @@ def weight_variable(shape,
     Declares a variable.
 
     :param shape:         [list]     Shape of the weights.
-    :param init_method:   [string]   Initialization method, one of 'constant', 'truncated_normal',
-                                     'uniform_scaling', 'xavier'.
-    :param dtype          [dtype]    Data type, one of TensorFlow dtypes.
-    :param init_param:    [dict]     Initialization parameters.
-    :param weight_decay:  [float]    Weight decay.
-    :param name:          [string]   Name of the variable.
-    :param trainable:     [bool]     Whether the variable can be trained.
-    :param seed:          [int]      Initialization seed.
+    :param init_method:   [string]   One of 'constant', 'truncated_normal', 'uniform_scaling', 'xavier'.
+    :param dtype          [dtype]    TensorFlow dtype.
+    :param init_param:    [dict]     Init parameters.
+    :param weight_decay:  [float]    L2 weight decay.
+    :param name:          [string]   Variable name.
+    :param trainable:     [bool]     Trainable flag.
+    :param seed:          [int]      Random seed.
 
-    :return:              [tf.Variable] Declared variable.
+    :return:              [tf.Variable]
     """
     if dtype != tf.float32:
         log.warning('Not using float32, currently using {}'.format(dtype))
+
     if init_method is None:
         initializer = tf.zeros_initializer(dtype=dtype)
     elif init_method == 'truncated_normal':
-        if 'mean' not in init_param:
-            mean = 0.0
-        else:
-            mean = init_param['mean']
-        if 'stddev' not in init_param:
-            stddev = 0.1
-        else:
-            stddev = init_param['stddev']
+        mean = 0.0 if not init_param or 'mean' not in init_param else init_param['mean']
+        stddev = 0.1 if not init_param or 'stddev' not in init_param else init_param['stddev']
         log.info('Normal initialization std {:.3e}'.format(stddev))
-        initializer = tf.truncated_normal_initializer(
-            mean=mean, stddev=stddev, seed=seed, dtype=dtype)
+        initializer = tf.truncated_normal_initializer(mean=mean, stddev=stddev, seed=seed, dtype=dtype)
     elif init_method == 'uniform_scaling':
-        if 'factor' not in init_param:
-            factor = 1.0
-        else:
-            factor = init_param['factor']
+        factor = 1.0 if not init_param or 'factor' not in init_param else init_param['factor']
         log.info('Uniform initialization scale {:.3e}'.format(factor))
         initializer = tf.uniform_unit_scaling_initializer(factor=factor, seed=seed, dtype=dtype)
     elif init_method == 'constant':
-        if 'val' not in init_param:
-            value = 0.0
-        else:
-            value = init_param['val']
+        value = 0.0 if not init_param or 'val' not in init_param else init_param['val']
         initializer = tf.constant_initializer(value=value, dtype=dtype)
     elif init_method == 'xavier':
-        initializer = tf.contrib.layers.xavier_initializer(uniform=False, seed=seed, dtype=dtype)
+        # tf.contrib.layers.xavier_initializer is removed in TF2
+        # Use Glorot (Xavier) from Keras initializers. Original code used uniform=False => normal.
+        initializer = tf.compat.v1.keras.initializers.glorot_normal()
     else:
         raise ValueError('Non supported initialization method!')
+
     try:
         shape_int = [int(ss) for ss in shape]
         log.info('Weight shape {}'.format(shape_int))
-    except:
+    except Exception:
         pass
-    if weight_decay is not None:
-        if weight_decay > 0.0:
 
-            def _reg(x):
-                return tf.multiply(tf.nn.l2_loss(x), weight_decay)
-
-            reg = _reg
-            log.info('Weight decay {}'.format(weight_decay))
-        else:
-            reg = None
+    if weight_decay is not None and weight_decay > 0.0:
+        def _reg(x):
+            return tf.multiply(tf.nn.l2_loss(x), weight_decay)
+        reg = _reg
+        log.info('Weight decay {}'.format(weight_decay))
     else:
         reg = None
-    var = tf.get_variable(
-        name, shape, initializer=initializer, regularizer=reg, dtype=dtype, trainable=trainable)
 
-    if weight_decay is None or weight_decay == 0.0:
+    var = tf.get_variable(
+        name, shape, initializer=initializer, regularizer=reg, dtype=dtype, trainable=trainable
+    )
+
+    if not weight_decay:
         log.warning('No weight decay for {}'.format(var.name))
 
     log.info('Initialized weight {}'.format(var.name))
@@ -112,8 +89,7 @@ def weight_variable_cpu(shape,
                         trainable=True,
                         seed=0):
     """
-    Declares variables on CPU.
-    See weight_variable for usage.
+    Declares variables on CPU. See weight_variable for usage.
     """
     with tf.device('/cpu:0'):
         return weight_variable(
@@ -124,52 +100,23 @@ def weight_variable_cpu(shape,
             weight_decay=weight_decay,
             name=name,
             trainable=trainable,
-            seed=seed)
+            seed=seed
+        )
 
 
 def concat(x, axis):
-    """
-    Concatenates a list of tensors.
-
-    :param x:     [list]   A list of TensorFlow tensor objects.
-    :param axis:  [int]    Axis along which to be concatenated.
-
-    :return:      [Tensor] Concatenated tensor.
-    """
-    if tf.__version__.startswith('0'):    # 0.12 compatibility.
-        return tf.concat(axis, x)
-    else:
-        return tf.concat(x, axis=axis)
+    """Concatenates a list of tensors along axis."""
+    return tf.concat(x, axis=axis)
 
 
 def split(x, num, axis):
-    """
-    Splits a tensor into a list of tensors.
-
-    :param x:     [Tensor]  A TensorFlow tensor object to be split.
-    :param num:   [int]     Number of splits.
-    :param axis:  [int]     Axis along which to be split.
-
-    :return:      [list]    A list of TensorFlow tensor objects.
-    """
-    if tf.__version__.startswith('0'):    # 0.12 compatibility.
-        return tf.split(axis, num, x)
-    else:
-        return tf.split(x, num, axis)
+    """Splits a tensor into `num` parts along axis."""
+    return tf.split(x, num_or_size_splits=num, axis=axis)
 
 
 def stack(x):
-    """
-    Stacks a list of tensors.
-
-    :param x:     [list]   A list of TensorFlow tensor objects.
-
-    :return:      [Tensor] Stacked tensor.
-    """
-    if tf.__version__.startswith('0'):    # 0.12 compatibility.
-        return tf.pack(x)
-    else:
-        return tf.stack(x)
+    """Stacks a list of tensors along a new axis (axis=0)."""
+    return tf.stack(x)
 
 
 def cnn(x,
@@ -185,34 +132,7 @@ def cnn(x,
         scope='cnn',
         trainable=True):
     """
-    Builds a convolutional neural networks.
-    Each layer contains the following operations:
-        1) Convolution, y = w * x.
-        2) Additive bias (optional), y = w * x + b.
-        3) Activation function (optional), y = g( w * x + b ).
-        4) Pooling (optional).
-
-    Layers are having the following naming convention, e.g.
-        - cnn/layer_0/w       # Conv filters
-        - cnn/layer_0/b       # Conv filter biases
-        - cnn/layer_0/act:0   # Output activation
-        - cnn/layer_0/pool:0  # Output pooled activation
-    Use graph.get_tensor_by_name to query for activation from a specific layer.
-
-    :param x:            [Tensor]    Input variable.
-    :param filter_size:  [list]      Shape of the convolutional filters, list of 4-d int.
-    :param strides:      [list]      Convolution strides, list of 4-d int.
-    :param pool_fn:      [list]      Pooling functions, list of N callable objects.
-    :param pool_size:    [list]      Pooling field size, list of 4-d int.
-    :param pool_strides: [list]      Pooling strides, list of 4-d int.
-    :param act_fn:       [list]      Activation functions, list of N callable objects.
-    :param dtype         [dtype]     Data type, one of TensorFlow dtypes.
-    :param add_bias:     [bool]      Whether adding bias or not, bool.
-    :param weight_decay:           [float]     Weight decay, float.
-    :param scope:        [string]    Scope of the model, str.
-    :param trainable     [bool]      Whether the weights are trainable.
-
-    :return              [Tensor]    Last activation of the CNN.
+    Builds a convolutional neural network.
     """
     num_layer = len(filter_size)
     h = x
@@ -239,8 +159,7 @@ def cnn(x,
                 if act_fn[ii] is not None:
                     h = act_fn[ii](h, name='act')
                 if pool_fn[ii] is not None:
-                    h = pool_fn[ii](
-                        h, pool_size[ii], strides=pool_strides[ii], padding='SAME', name='pool')
+                    h = pool_fn[ii](h, pool_size[ii], strides=pool_strides[ii], padding='SAME', name='pool')
     return h
 
 
@@ -256,22 +175,6 @@ def mlp(x,
         trainable=True):
     """
     Builds a multi-layer perceptron.
-    Each layer contains the following operations:
-        1) Linear transformation, y = w^T x.
-        2) Additive bias (optional), y = w^T x + b.
-        3) Activation function (optional), y = g( w^T x + b )
-        4) Dropout (optional)
-
-    :param x:            [Tensor]    Input variable.
-    :param dims:         [list]      Layer dimensions, list of N+1 int.
-    :param is_training   [bool]      Whether is in training mode.
-    :param act_fn:       [list]      Activation functions, list of N callable objects.
-    :param add_bias:     [bool]      Whether adding bias or not.
-    :param weight_decay:           [float]     Weight decay.
-    :param scope:        [string]    Scope of the model.
-    :param dropout:      [list]      Whether to apply dropout, None or list of N bool.
-
-    :return              [Tensor]    Last activation of the MLP.
     """
     num_layer = len(dims) - 1
     h = x
@@ -301,10 +204,7 @@ def mlp(x,
                     h = act_fn[ii](h)
                 if dropout is not None and dropout[ii]:
                     log.info('Apply dropout 0.5')
-                    if is_training:
-                        keep_prob = 0.5
-                    else:
-                        keep_prob = 1.0
+                    keep_prob = 0.5 if is_training else 1.0
                     h = tf.nn.dropout(h, keep_prob=keep_prob)
     return h
 
@@ -320,18 +220,7 @@ def batch_norm(x,
                data_format='NHWC'):
     """
     Applies batch normalization.
-    Collect mean and variances on x except the last dimension. And apply
-    normalization as below:
-    x_ = gamma * (x - mean) / sqrt(var + eps) + beta
-
-    :param x:       [Tensor]    Input tensor.
-    :param gamma:   [Tensor]    Scaling parameter.
-    :param beta:    [Tensor]    Bias parameter.
-    :param axes:    [list]      Axes to collect statistics.
-    :param eps:     [float]     Denominator bias.
-
-    :return normed: [Tensor]    Batch-normalized variable.
-    :return ops:    [list]      List of EMA ops.
+    Returns (normed, update_ops_or_None)
     """
     if data_format == 'NHWC':
         n_out = x.get_shape()[-1]
@@ -339,11 +228,15 @@ def batch_norm(x,
     elif data_format == 'NCHW':
         n_out = x.get_shape()[1]
         axes = [0, 2, 3]
+    else:
+        raise ValueError('Unsupported data_format: {}'.format(data_format))
+
     try:
         n_out = int(n_out)
         shape = [n_out]
-    except:
+    except Exception:
         shape = None
+
     emean = tf.get_variable(
         'ema_mean',
         shape=shape,
@@ -356,6 +249,7 @@ def batch_norm(x,
         trainable=False,
         dtype=dtype,
         initializer=tf.constant_initializer(1.0, dtype=dtype))
+
     if is_training:
         mean, var = tf.nn.moments(x, axes, name='moments')
         ema_mean_op = tf.assign_sub(emean, (emean - mean) * (1 - decay))
