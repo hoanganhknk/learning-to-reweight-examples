@@ -206,9 +206,8 @@ def train(train_loader,train_meta_loader,model,optimizer_model,epoch):
         outputs = meta_model(inputs)
 
         cost = F.cross_entropy(outputs, targets, reduce=False)
-        cost_v = torch.reshape(cost, (len(cost), 1))
-        eps = to_var(torch.zeros(cost_v.size()).cuda(), requires_grad=True)
-        l_f_meta = torch.sum(cost_v * eps)
+        eps = torch.zeros_like(cost, requires_grad=True, device=inputs.device)
+        l_f_meta = (cost * eps).sum()
         meta_model.zero_grad()
         grads = torch.autograd.grad(l_f_meta, (meta_model.params()), create_graph=True)
         meta_lr = args.lr * ((0.1 ** int(epoch >= 80)) * (0.1 ** int(epoch >= 100)))   # For ResNet32
