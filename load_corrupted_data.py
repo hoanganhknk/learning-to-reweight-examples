@@ -13,7 +13,6 @@ from torchvision.datasets.utils import download_url, check_integrity
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable as V
-import wideresnet as wrn
 import torchvision.transforms as transforms
 
 
