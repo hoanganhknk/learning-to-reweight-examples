@@ -24,7 +24,7 @@ import random
 import numpy as np
 
 # from wideresnet import WideResNet, VNet
-from resnet import ResNet32,VNet
+from model import ResNet32
 from load_corrupted_data import CIFAR10, CIFAR100
 
 parser = argparse.ArgumentParser(description='PyTorch WideResNet Training')
@@ -253,7 +253,6 @@ def train(train_loader,train_meta_loader,model, vnet,optimizer_model,optimizer_v
 train_loader, train_meta_loader, test_loader = build_dataset()
 # create model
 model = build_model()
-vnet = VNet(1, 100, 1).cuda()
 
 if args.dataset == 'cifar10':
     num_classes = 10
@@ -263,14 +262,13 @@ if args.dataset == 'cifar100':
 
 optimizer_model = torch.optim.SGD(model.params(), args.lr,
                                   momentum=args.momentum, weight_decay=args.weight_decay)
-optimizer_vnet = torch.optim.Adam(vnet.params(), 1e-3,
-                             weight_decay=1e-4)
+
 
 def main():
     best_acc = 0
     for epoch in range(args.epochs):
         adjust_learning_rate(optimizer_model, epoch)
-        train(train_loader,train_meta_loader,model, vnet,optimizer_model,optimizer_vnet,epoch)
+        train(train_loader,train_meta_loader,model, None, None,epoch)
         test_acc = test(model=model, test_loader=test_loader)
         if test_acc >= best_acc:
             best_acc = test_acc
