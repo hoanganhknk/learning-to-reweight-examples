@@ -76,6 +76,10 @@ device = torch.device("cuda" if use_cuda else "cpu")
 print()
 print(args)
 
+def to_var(x, requires_grad=True):
+    if torch.cuda.is_available():
+        x = x.cuda()
+    return Variable(x, requires_grad=requires_grad)
 def build_dataset():
     normalize = transforms.Normalize(mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
                                      std=[x / 255.0 for x in [63.0, 62.1, 66.7]])
@@ -203,7 +207,7 @@ def train(train_loader,train_meta_loader,model,optimizer_model,epoch):
 
         cost = F.cross_entropy(outputs, targets, reduce=False)
         cost_v = torch.reshape(cost, (len(cost), 1))
-        eps = torch.zeros(cost_v.size()).cuda()
+        eps = to_var(torch.zeros(cost_v.size()).cuda(), requires_grad=True)
         l_f_meta = torch.sum(cost_v * eps)
         meta_model.zero_grad()
         grads = torch.autograd.grad(l_f_meta, (meta_model.params()), create_graph=True)
