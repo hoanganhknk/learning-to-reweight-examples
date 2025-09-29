@@ -1,21 +1,33 @@
+# -*- coding: utf-8 -*-
+
+import argparse
+import os
+import shutil
+import time
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.nn.parallel
+import torch.backends.cudnn as cudnn
+import torch.optim
+import torch.utils.data
+import torchvision.transforms as transforms
+import torchvision.datasets as datasets
 from torch.autograd import Variable
-from model import *
-from data_loader import *
+from torch.utils.data.sampler import SubsetRandomSampler
 import matplotlib.pyplot as plt
-from tqdm import tqdm
-import IPython
-import gc
-import matplotlib
-from torchvision import transforms
-from load_corrupted_data import CIFAR10, CIFAR100
-matplotlib.rcParams.update({'errorbar.capsize': 5})
-# thêm argument về dataset
-import argparse
+# import sklearn.metrics as sm
+# import pandas as pd
+# import sklearn.metrics as sm
+import random
+import numpy as np
 
-parser = argparse.ArgumentParser(description='Meta Learning with PyTorch')
+# from wideresnet import WideResNet, VNet
+from resnet import ResNet32,VNet
+from load_corrupted_data import CIFAR10, CIFAR100
+
+parser = argparse.ArgumentParser(description='PyTorch WideResNet Training')
 parser.add_argument('--dataset', default='cifar10', type=str,
                     help='dataset (cifar10 [default] or cifar100)')
 parser.add_argument('--corruption_prob', type=float, default=0.4,
@@ -53,23 +65,36 @@ parser.add_argument('--name', default='WideResNet-28-10', type=str,
                     help='name of experiment')
 parser.add_argument('--seed', type=int, default=1)
 parser.add_argument('--prefetch', type=int, default=0, help='Pre-fetching threads.')
+parser.set_defaults(augment=True)
 
 args = parser.parse_args()
-hyperparameters = {
-    'lr' : 1e-3,
-    'momentum' : 0.9,
-    'batch_size' : 100,
-    'num_iterations' : 8000,
-}
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+use_cuda = True
+torch.manual_seed(args.seed)
+device = torch.device("cuda" if use_cuda else "cpu")
+
+
+print()
+print(args)
+
 def build_dataset():
     normalize = transforms.Normalize(mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
                                      std=[x / 255.0 for x in [63.0, 62.1, 66.7]])
-
-    train_transform = transforms.Compose([
-        transforms.ToTensor(),
-        normalize,
-    ])
+    if args.augment:
+        train_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: F.pad(x.unsqueeze(0),
+                                              (4, 4, 4, 4), mode='reflect').squeeze()),
+            transforms.ToPILImage(),
+            transforms.RandomCrop(32),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ])
+    else:
+        train_transform = transforms.Compose([
+            transforms.ToTensor(),
+            normalize,
+        ])
     test_transform = transforms.Compose([
         transforms.ToTensor(),
         normalize
@@ -107,17 +132,38 @@ def build_dataset():
     return train_loader, train_meta_loader, test_loader
 
 
-
 def build_model():
-    net = ResNet32(args.dataset == 'cifar10' and 10 or 100)
+    model = ResNet32(args.dataset == 'cifar10' and 10 or 100)
 
     if torch.cuda.is_available():
-        net.cuda()
-        torch.backends.cudnn.benchmark=True
+        model.cuda()
+        torch.backends.cudnn.benchmark = True
 
-    opt = torch.optim.SGD(net.params(),lr=hyperparameters["lr"])
-    
-    return net, opt
+    return model
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the precision@k for the specified values of k"""
+    maxk = max(topk)
+    batch_size = target.size(0)
+
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+    res = []
+    for k in topk:
+        correct_k = correct[:k].view(-1).float().sum(0)
+        res.append(correct_k.mul_(100.0 / batch_size))
+    return res
+
+
+def adjust_learning_rate(optimizer, epochs):
+    lr = args.lr * ((0.1 ** int(epochs >= 80)) * (0.1 ** int(epochs >= 100)))  # For WRN-28-10
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+
+
 def test(model, test_loader):
     model.eval()
     correct = 0
@@ -139,88 +185,98 @@ def test(model, test_loader):
         accuracy))
 
     return accuracy
-def train_lre(train_loader,train_meta_loader,model, vnet,optimizer_model,optimizer_vnet,epoch):
-    print('Training at epoch {}'.format(epoch)) 
-    net_losses = []
-    meta_losses_clean = []
-    net_l = 0
-    smoothing_alpha = 0.9 
-    accuracy_log = []
+
+
+def train(train_loader,train_meta_loader,model, vnet,optimizer_model,optimizer_vnet,epoch):
+    print('\nEpoch: %d' % epoch)
+
+    train_loss = 0
+    meta_loss = 0
+
     train_meta_loader_iter = iter(train_meta_loader)
     for batch_idx, (inputs, targets) in enumerate(train_loader):
         model.train()
         inputs, targets = inputs.to(device), targets.to(device)
+        meta_model = build_model().cuda()
+        meta_model.load_state_dict(model.state_dict())
+        outputs = meta_model(inputs)
 
-        meta_net = ResNet32(args.dataset == 'cifar10' and 10 or 100)
-        meta_net.load_state_dict(model.state_dict())
-        if torch.cuda.is_available():
-            meta_net.cuda()
-        
-        y_f_hat = meta_net(inputs)
-        cost = F.cross_entropy(y_f_hat, targets, reduction='none')
-        eps = torch.ones(cost.size(0), 1).to(device)
-        l_f_meta = torch.sum(cost.view(-1,1) * eps)
-        meta_net.zero_grad()
-        grads = torch.autograd.grad(l_f_meta, (meta_net.params()), create_graph=True)
-        meta_net.update_params(lr_inner=hyperparameters['lr'], source_params=grads)
+        cost = F.cross_entropy(outputs, targets, reduce=False)
+        cost_v = torch.reshape(cost, (len(cost), 1))
+        eps = torch.zeros(cost_v.size()).cuda()
+        l_f_meta = torch.sum(cost_v * eps)
+        meta_model.zero_grad()
+        grads = torch.autograd.grad(l_f_meta, (meta_model.params()), create_graph=True)
+        meta_lr = args.lr * ((0.1 ** int(epoch >= 80)) * (0.1 ** int(epoch >= 100)))   # For ResNet32
+        meta_model.update_params(lr_inner=meta_lr, source_params=grads)
+        del grads
+
         try:
             inputs_val, targets_val = next(train_meta_loader_iter)
         except StopIteration:
             train_meta_loader_iter = iter(train_meta_loader)
             inputs_val, targets_val = next(train_meta_loader_iter)
-        y_g_hat = meta_net(inputs_val)
+        inputs_val, targets_val = inputs_val.to(device), targets_val.to(device)
+        y_g_hat = meta_model(inputs_val)
         l_g_meta = F.cross_entropy(y_g_hat, targets_val)
-        l_g_meta = torch.sum(l_g_meta)
-        grad_eps = torch.autograd.grad(l_g_meta, eps, only_inputs=True)[0]
+        prec_meta = accuracy(y_g_hat.data, targets_val.data, topk=(1,))[0]
+        grad_eps = torch.autograd.grad(l_g_meta, (eps,), only_inputs=True)[0]
         w_tilde = torch.clamp(-grad_eps, min=0)
         norm_c = torch.sum(w_tilde)
-
         if norm_c != 0:
             w = w_tilde / norm_c
         else:
             w = w_tilde
-        
         y_f_hat = model(inputs)
-        cost = F.cross_entropy(y_f_hat, targets, reduction='none')
-        l_f = torch.sum(cost.view(-1,1) * w)
+        cost = F.cross_entropy(y_f_hat, targets, reduce=False)
+        l_f = torch.sum(cost * w)
         optimizer_model.zero_grad()
         l_f.backward()
         optimizer_model.step()
+        train_loss += l_f.item()
+        meta_loss += l_g_meta.item()
+        prec_train = accuracy(y_f_hat.data, targets.data, topk=(1,))[0]
 
-        meta_l = smoothing_alpha * meta_l + (1 - smoothing_alpha) * l_g_meta.item() if batch_idx > 0 else l_g_meta.item()
+        if (batch_idx + 1) % 50 == 0:
+            print('Epoch: [%d/%d]\t'
+                  'Iters: [%d/%d]\t'
+                  'Loss: %.4f\t'
+                  'MetaLoss:%.4f\t'
+                  'Prec@1 %.2f\t'
+                  'Prec_meta@1 %.2f' % (
+                      (epoch + 1), args.epochs, batch_idx + 1, len(train_loader.dataset)/args.batch_size, (train_loss / (batch_idx + 1)),
+                      (meta_loss / (batch_idx + 1)), prec_train, prec_meta))
 
-        meta_losses_clean.append(meta_l/(1-smoothing_alpha**(batch_idx+1)))
 
-        net_l = smoothing_alpha * net_l + (1 - smoothing_alpha) * l_f.item() if batch_idx > 0 else l_f.item()
-        net_losses.append(net_l/(1-smoothing_alpha**(batch_idx+1)))
 
-        if batch_idx % 50 == 0:
-            print('Epoch: [{}/{}], Iteration: [{}/{}] \t Net Loss: {:.4f} \t Meta Loss: {:.4f}'.format(
-                epoch, args.epochs, batch_idx+1,
-                len(train_loader), net_losses[-1], meta_losses_clean[-1]))
-            accuracy = test(model)
-            accuracy_log.append(accuracy)
-            print('Val accuracy: {:.2f}%'.format(accuracy))
-            model.train()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-model, optimizer_model = build_model()
 
 train_loader, train_meta_loader, test_loader = build_dataset()
+# create model
+model = build_model()
+vnet = VNet(1, 100, 1).cuda()
+
+if args.dataset == 'cifar10':
+    num_classes = 10
+if args.dataset == 'cifar100':
+    num_classes = 100
+
+
+optimizer_model = torch.optim.SGD(model.params(), args.lr,
+                                  momentum=args.momentum, weight_decay=args.weight_decay)
+optimizer_vnet = torch.optim.Adam(vnet.params(), 1e-3,
+                             weight_decay=1e-4)
 
 def main():
-    vnet = None
-    optimizer_vnet = None
     best_acc = 0
-    for epoch in range(args.start_epoch, args.epochs):
-        train_lre(train_loader,train_meta_loader,model, vnet,optimizer_model,optimizer_vnet,epoch)
-        acc = test(model, test_loader)
-        if acc > best_acc:
-            best_acc = acc
-            torch.save(model.state_dict(), 'best_model.pth')
-            print('Model saved!')
-    print('Best accuracy: {:.2f}%'.format(best_acc))
+    for epoch in range(args.epochs):
+        adjust_learning_rate(optimizer_model, epoch)
+        train(train_loader,train_meta_loader,model, vnet,optimizer_model,optimizer_vnet,epoch)
+        test_acc = test(model=model, test_loader=test_loader)
+        if test_acc >= best_acc:
+            best_acc = test_acc
+
+    print('best accuracy:', best_acc)
+
 
 if __name__ == '__main__':
     main()
