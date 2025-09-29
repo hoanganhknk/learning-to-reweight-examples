@@ -146,6 +146,7 @@ def train_lre(train_loader,train_meta_loader,model, vnet,optimizer_model,optimiz
     net_l = 0
     smoothing_alpha = 0.9 
     accuracy_log = []
+    train_meta_loader_iter = iter(train_meta_loader)
     for batch_idx, (inputs, targets) in enumerate(train_loader):
         model.train()
         inputs, targets = inputs.to(device), targets.to(device)
