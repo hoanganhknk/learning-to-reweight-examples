@@ -225,3 +225,6 @@ def main():
             torch.save(model.state_dict(), 'best_model.pth')
             print('Model saved!')
     print('Best accuracy: {:.2f}%'.format(best_acc))
+
+if __name__ == '__main__':
+    main()
