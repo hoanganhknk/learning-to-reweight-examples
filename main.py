@@ -213,8 +213,6 @@ def train(train_loader,train_meta_loader,model,optimizer_model,epoch):
         grads = torch.autograd.grad(l_f_meta, (meta_model.params()), create_graph=True)
         meta_lr = args.lr * ((0.1 ** int(epoch >= 80)) * (0.1 ** int(epoch >= 100)))   # For ResNet32
         meta_model.update_params(lr_inner=meta_lr, source_params=grads)
-        del grads
-
         try:
             inputs_val, targets_val = next(train_meta_loader_iter)
         except StopIteration:
