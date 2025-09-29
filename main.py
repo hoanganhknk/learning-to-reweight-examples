@@ -65,7 +65,7 @@ parser.add_argument('--name', default='WideResNet-28-10', type=str,
                     help='name of experiment')
 parser.add_argument('--seed', type=int, default=1)
 parser.add_argument('--prefetch', type=int, default=0, help='Pre-fetching threads.')
-parser.set_defaults(augment=True)
+parser.set_defaults(augment=False)
 
 args = parser.parse_args()
 use_cuda = True
