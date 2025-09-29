@@ -187,7 +187,7 @@ def test(model, test_loader):
     return accuracy
 
 
-def train(train_loader,train_meta_loader,model, vnet,optimizer_model,optimizer_vnet,epoch):
+def train(train_loader,train_meta_loader,model,optimizer_model,epoch):
     print('\nEpoch: %d' % epoch)
 
     train_loss = 0
@@ -268,7 +268,7 @@ def main():
     best_acc = 0
     for epoch in range(args.epochs):
         adjust_learning_rate(optimizer_model, epoch)
-        train(train_loader,train_meta_loader,model, None, None,epoch)
+        train(train_loader,train_meta_loader, model,optimizer_model, epoch)
         test_acc = test(model=model, test_loader=test_loader)
         if test_acc >= best_acc:
             best_acc = test_acc
