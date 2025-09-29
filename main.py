@@ -108,11 +108,6 @@ def build_dataset():
 
 
 
-def to_var(x, requires_grad=True):
-    if torch.cuda.is_available():
-        x = x.cuda()
-    return Variable(x, requires_grad=requires_grad)
-
 def build_model():
     net = ResNet32(args.dataset == 'cifar10' and 10 or 100)
 
@@ -153,7 +148,7 @@ def train_lre(train_loader,train_meta_loader,model, vnet,optimizer_model,optimiz
     accuracy_log = []
     for batch_idx, (inputs, targets) in enumerate(train_loader):
         model.train()
-        inputs, targets = to_var(inputs), to_var(targets)
+        inputs, targets = inputs.to(device), targets.to(device)
 
         meta_net = ResNet32(args.dataset == 'cifar10' and 10 or 100)
         meta_net.load_state_dict(model.state_dict())
@@ -162,7 +157,7 @@ def train_lre(train_loader,train_meta_loader,model, vnet,optimizer_model,optimiz
         
         y_f_hat = meta_net(inputs)
         cost = F.cross_entropy(y_f_hat, targets, reduction='none')
-        eps = to_var(torch.ones(cost.size(0), 1))
+        eps = torch.ones(cost.size(0), 1).to(device)
         l_f_meta = torch.sum(cost.view(-1,1) * eps)
         meta_net.zero_grad()
         grads = torch.autograd.grad(l_f_meta, (meta_net.params()), create_graph=True)
